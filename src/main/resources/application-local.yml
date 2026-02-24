@@ -1,0 +1,8 @@
+spring:
+  kafka:
+    bootstrap-servers: kafka:9092
+
+aws:
+  s3:
+    endpoint-override: http://localstack:4566
+    bucket-name: pageview-data

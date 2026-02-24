@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: pageview-pipeline
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      auto-offset-reset: earliest
+      group-id: pageview-pipeline
+
+pipeline:
+  pageviews-topic: pageviews
+  aggregates-topic: pageview-aggregates
+  raw:
+    batch-size: 25
+    flush-interval-seconds: 30
+  aggregate:
+    batch-size: 50
+    flush-interval-seconds: 60
+  stream:
+    window-size-seconds: 60
+    grace-period-minutes: 5
+    threads: 2
+
+aws:
+  region: eu-west-2
+  s3:
+    bucket-name: pageview-data
