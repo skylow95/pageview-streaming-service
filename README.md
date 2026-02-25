@@ -114,7 +114,7 @@ export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/docker/docker.sock
 
 ```
 src/main/java/com/pageview/pipeline/
-├── PageviewPipelineApplication.java
+├── MainApplication.java
 ├── factory/        # Kafka, Kafka Streams, S3 bean factories
 ├── controller/     # PageviewController (REST API)
 ├── model/          # Pageview, PageviewAggregate

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pageview.pipeline.model.Pageview;
 import com.pageview.pipeline.utils.BufferUtils;
 import com.pageview.pipeline.utils.S3NdjsonUtils;
+import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -30,6 +31,10 @@ public class RawPageviewS3Writer {
 
     private static final String PARTITION_PATTERN = "yyyy/MM/dd/HH";
     private static final String RAW_PREFIX = "raw/";
+
+    private static final String METRIC_S3_WRITES = "s3.writes";
+    private static final String METRIC_S3_ERRORS = "s3.errors";
+    private static final String TAG_WRITER = "writer";
 
     private final S3Client s3Client;
     private final String bucketName;
@@ -89,7 +94,9 @@ public class RawPageviewS3Writer {
                 S3NdjsonUtils.writeToS3(s3Client, bucketName, s3Key, ndjson);
                 log.debug("Wrote {} raw pageviews to s3://{}/{}", batch.size(), bucketName, s3Key);
             }
+            Metrics.counter(METRIC_S3_WRITES, TAG_WRITER, "raw").increment(batch.size());
         } catch (Exception e) {
+            Metrics.counter(METRIC_S3_ERRORS, TAG_WRITER, "raw").increment();
             log.error("Failed to write raw pageviews to S3", e);
             buffer.addAll(batch);
         }

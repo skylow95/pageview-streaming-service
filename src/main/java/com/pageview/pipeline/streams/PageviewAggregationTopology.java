@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerde;
 
@@ -32,20 +33,26 @@ public class PageviewAggregationTopology {
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneOffset.UTC);
     public static final String PAGEVIEW_COUNTS = "pageview-counts";
 
+    private final KafkaTemplate<String, Pageview> kafkaTemplate;
     private final String inputTopic;
     private final String outputTopic;
+    private final String lateTopic;
     private final Duration aggregationWindow;
     private final Duration gracePeriodWindow;
     private final ObjectMapper objectMapper;
 
     public PageviewAggregationTopology(
+            KafkaTemplate<String, Pageview> kafkaTemplate,
             @Value("${pipeline.pageviews-topic:pageviews}") String inputTopic,
             @Value("${pipeline.aggregates-topic:pageview-aggregates}") String outputTopic,
+            @Value("${pipeline.late-topic:late-pageview-aggregates}")String lateTopic,
             @Value("${pipeline.stream.window-size-seconds:60}") int windowSizeSeconds,
             @Value("${pipeline.stream.grace-period-minutes:5}") int gracePeriodMinutes,
             @Qualifier("jsonObjectMapper") ObjectMapper objectMapper) {
+        this.kafkaTemplate = kafkaTemplate;
         this.inputTopic = inputTopic;
         this.outputTopic = outputTopic;
+        this.lateTopic = lateTopic;
         this.aggregationWindow = Duration.ofSeconds(windowSizeSeconds);
         this.gracePeriodWindow = Duration.ofMinutes(gracePeriodMinutes);
         this.objectMapper = objectMapper;
@@ -62,6 +69,7 @@ public class PageviewAggregationTopology {
 
 
         stream
+                .transform(() -> new LateDetectingTransformer(kafkaTemplate, lateTopic, aggregationWindow.toMillis(), gracePeriodWindow.toMillis()))
                 .groupBy((key, value) -> value.postcode(),
                         Grouped.with(Serdes.String(), pageviewSerde))
                 .windowedBy(TimeWindows.ofSizeAndGrace(aggregationWindow, gracePeriodWindow))

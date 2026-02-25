@@ -1,6 +1,7 @@
 package com.pageview.pipeline.controller;
 
 import com.pageview.pipeline.model.Pageview;
+import io.micrometer.core.instrument.Metrics;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -17,6 +18,9 @@ import java.util.List;
 @RequestMapping("/api/pageviews")
 public class PageviewController {
 
+    private static final String METRIC_PAGEVIEWS_PRODUCED = "pageviews.produced";
+    private static final String TAG_ENDPOINT = "endpoint";
+
     private final KafkaTemplate<String, Pageview> kafkaTemplate;
     private final String pageviewsTopic;
 
@@ -30,11 +34,13 @@ public class PageviewController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public void produce(@Valid @RequestBody Pageview pageview) {
         kafkaTemplate.send(pageviewsTopic, pageview.postcode(), pageview);
+        Metrics.counter(METRIC_PAGEVIEWS_PRODUCED, TAG_ENDPOINT, "single").increment();
     }
 
     @PostMapping(value = "/batch", consumes = "application/json", produces = "application/json")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public void produceBatch(@Valid @RequestBody List<Pageview> pageviews) {
         pageviews.forEach(pv -> kafkaTemplate.send(pageviewsTopic, pv.postcode(), pv));
+        Metrics.counter(METRIC_PAGEVIEWS_PRODUCED, TAG_ENDPOINT, "batch").increment(pageviews.size());
     }
 }

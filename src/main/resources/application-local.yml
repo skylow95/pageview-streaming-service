@@ -6,3 +6,10 @@ aws:
   s3:
     endpoint-override: http://localstack:4566
     bucket-name: pageview-data
+
+# LocalStack has no CloudWatch; disable export when using local profile
+management:
+  metrics:
+    export:
+      cloudwatch:
+        enabled: false

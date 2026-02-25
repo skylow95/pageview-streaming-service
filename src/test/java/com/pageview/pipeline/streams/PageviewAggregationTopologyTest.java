@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 
@@ -29,10 +30,12 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class PageviewAggregationTopologyTest {
 
     private static final String PAGEVIEW_AGGREGATES = "pageview-aggregates";
+    private static final String LATE_PAGEVIEW_AGGREGATES = "late-pageview-aggregates";
     private static final String PAGEVIEWS = "pageviews";
 
     private TopologyTestDriver testDriver;
@@ -43,10 +46,12 @@ class PageviewAggregationTopologyTest {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
             .build();
 
+    private final KafkaTemplate<String, Pageview> kafkaTemplate = mock(KafkaTemplate.class);
+
     @BeforeEach
     void setUp() {
         PageviewAggregationTopology topology = new PageviewAggregationTopology(
-                PAGEVIEWS, PAGEVIEW_AGGREGATES, 60, 5, objectMapper);
+                kafkaTemplate, PAGEVIEWS, PAGEVIEW_AGGREGATES, LATE_PAGEVIEW_AGGREGATES, 60, 5, objectMapper);
 
         StreamsBuilder builder = new StreamsBuilder();
         topology.pageviewAggregationStream(builder);

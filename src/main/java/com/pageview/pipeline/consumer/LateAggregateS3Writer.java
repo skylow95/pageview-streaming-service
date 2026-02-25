@@ -1,6 +1,7 @@
 package com.pageview.pipeline.consumer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.pageview.pipeline.model.Pageview;
 import com.pageview.pipeline.model.PageviewAggregate;
 import com.pageview.pipeline.utils.AggregatePathUtils;
 import com.pageview.pipeline.utils.BufferUtils;
@@ -14,6 +15,9 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.s3.S3Client;
 
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -23,11 +27,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Component
-public class AggregateS3Writer {
+public class LateAggregateS3Writer {
 
-    private static final Logger log = LoggerFactory.getLogger(AggregateS3Writer.class);
+    private static final Logger log = LoggerFactory.getLogger(LateAggregateS3Writer.class);
 
     private static final String AGGREGATES_PREFIX = "aggregates/";
+    private static final DateTimeFormatter WINDOW_FORMATTER = DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneOffset.UTC);
 
     private static final String METRIC_S3_WRITES = "s3.writes";
     private static final String METRIC_S3_ERRORS = "s3.errors";
@@ -37,25 +42,31 @@ public class AggregateS3Writer {
     private final String bucketName;
     private final ObjectMapper objectMapper;
     private final int batchSize;
+    private final long windowSizeSeconds;
 
     private final ConcurrentLinkedQueue<PageviewAggregate> buffer = new ConcurrentLinkedQueue<>();
 
-    public AggregateS3Writer(S3Client s3Client,
-                             @Value("${aws.s3.bucket-name:pageview-data}") String bucketName,
-                             @Value("${pipeline.aggregate.batch-size:50}") int batchSize,
-                             @Value("${pipeline.aggregate.flush-interval-seconds:60}") int flushIntervalSeconds,
-                             @Qualifier("jsonObjectMapper") ObjectMapper objectMapper) {
+    public LateAggregateS3Writer(S3Client s3Client,
+                                 @Value("${aws.s3.bucket-name:pageview-data}") String bucketName,
+                                 @Value("${pipeline.late.batch-size:50}") int batchSize,
+                                 @Value("${pipeline.stream.window-size-seconds:60}") long windowSizeSeconds,
+                                 @Value("${pipeline.late.flush-interval-seconds:60}") int flushIntervalSeconds,
+                                 @Qualifier("jsonObjectMapper") ObjectMapper objectMapper) {
         this.s3Client = s3Client;
         this.bucketName = bucketName;
         this.batchSize = batchSize;
+        this.windowSizeSeconds = windowSizeSeconds;
         this.objectMapper = objectMapper;
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleAtFixedRate(this::flush, flushIntervalSeconds, flushIntervalSeconds, TimeUnit.SECONDS);
     }
 
-    @KafkaListener(topics = "${pipeline.aggregates-topic:pageview-aggregates}", groupId = "aggregates-s3-writer", containerFactory = "aggregateListenerFactory")
-    public void consume(PageviewAggregate aggregate) {
-        buffer.add(aggregate);
+    @KafkaListener(topics = "${pipeline.aggregates-topic:late-pageview-aggregates}", groupId = "late-aggregates-s3-writer", containerFactory = "pageviewListenerFactory")
+    public void consume(Pageview pageview) {
+        long windowStartSec = (pageview.timestamp() / windowSizeSeconds) * windowSizeSeconds;
+        String windowStart = WINDOW_FORMATTER.format(Instant.ofEpochSecond(windowStartSec));
+
+        buffer.add(new PageviewAggregate(pageview.postcode(), windowStart, 1L));
         if (buffer.size() >= batchSize) {
             flush();
         }
@@ -89,6 +100,6 @@ public class AggregateS3Writer {
     }
 
     private String formatKey(Map.Entry<String, List<PageviewAggregate>> data, long timestamp) {
-        return AGGREGATES_PREFIX + data.getKey() + "/aggregates-" + timestamp + ".ndjson";
+        return AGGREGATES_PREFIX + data.getKey() + "/late-" + timestamp + ".ndjson";
     }
 }

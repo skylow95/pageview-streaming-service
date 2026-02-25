@@ -149,7 +149,8 @@ class PageviewPipelineE2ETest {
         assertThat(sw19).isPresent();
         assertThat(sw19.get().pageviewCount()).isGreaterThanOrEqualTo(2L);
         assertThat(ec1).isPresent();
-        assertThat(ec1.get().pageviewCount()).isEqualTo(1L);
+        assertThat(ec1.get().pageviewCount()).
+                isEqualTo(1L);
 
         // Verify raw S3 path
         List<String> rawKeys = await()
