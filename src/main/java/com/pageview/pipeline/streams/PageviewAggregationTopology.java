@@ -69,7 +69,7 @@ public class PageviewAggregationTopology {
 
 
         stream
-                .transform(() -> new LateDetectingTransformer(kafkaTemplate, lateTopic, aggregationWindow.toMillis(), gracePeriodWindow.toMillis()))
+                .process(() -> new LateDetectingProcessor(kafkaTemplate, lateTopic, aggregationWindow.toMillis(), gracePeriodWindow.toMillis()))
                 .groupBy((key, value) -> value.postcode(),
                         Grouped.with(Serdes.String(), pageviewSerde))
                 .windowedBy(TimeWindows.ofSizeAndGrace(aggregationWindow, gracePeriodWindow))

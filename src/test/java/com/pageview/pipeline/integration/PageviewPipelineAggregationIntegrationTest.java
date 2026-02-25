@@ -31,10 +31,13 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -52,17 +55,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
-@EmbeddedKafka(partitions = 6, topics = {"pageviews", "pageview-aggregates"})
+@EmbeddedKafka(partitions = 6, topics = {"pageviews", "pageview-aggregates", "late-pageview-aggregates"})
 @Testcontainers
-@Tag("e2e")
+@Tag("integration")
 @DirtiesContext
 @ActiveProfiles("test")
-class PageviewPipelineE2ETest {
+class PageviewPipelineAggregationIntegrationTest {
 
-    private static final String E2E_APP_NAME = "pageview-pipeline-e2e-" + UUID.randomUUID();
-    private static final String BUCKET = "pageview-data";
-    private static final String EVENT_TIME_PARTITION = "2021/01/26/12";
-    private static final long WINDOW_START = 1611662640L;
+    private static final String E2E_APP_NAME = "pageview-pipeline-integration-" + UUID.randomUUID();
 
     @Container
     static LocalStackContainer localstack = new LocalStackContainer(DockerImageName.parse("localstack/localstack:3.0"))
@@ -76,15 +76,6 @@ class PageviewPipelineE2ETest {
         registry.add("spring.application.name", () -> E2E_APP_NAME);
     }
 
-    @BeforeEach
-     void createBucket() {
-        try {
-            s3Client.createBucket(CreateBucketRequest.builder().bucket(BUCKET).build());
-        } catch (Exception ex) {
-            // Do nothing
-        }
-    }
-
     @Autowired
     MockMvc mockMvc;
 
@@ -94,24 +85,44 @@ class PageviewPipelineE2ETest {
     @Autowired
     S3Client s3Client;
 
+    private static final String BUCKET = "pageview-data";
+
+    @BeforeEach
+    void createBucket() {
+        try {
+            s3Client.createBucket(CreateBucketRequest.builder().bucket(BUCKET).build());
+        } catch (software.amazon.awssdk.services.s3.model.S3Exception e) {
+            if (!e.awsErrorDetails().errorCode().contains("BucketAlreadyExists")
+                    && !e.awsErrorDetails().errorCode().contains("BucketAlreadyOwnedByYou")) {
+                throw e;
+            }
+            // Bucket exists from prior run; ok
+        }
+    }
+    /** Event-time partition for test data (timestamp 1611662640 = 2021-01-26 12:04 UTC). Processing-time would be today's date. */
+    private static final String EVENT_TIME_PARTITION = "2021/01/26/12";
+    /** Aggregate path for test data (yyyy/MM/dd from window 2021-01-26) */
+    private static final String AGGREGATE_DATE_PARTITION = "2021/01/26";
+
     private final ObjectMapper objectMapper = new ObjectMapper().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     @Test
     @DisplayName("Pipeline aggregates pageviews by postcode and 1-minute window")
     void aggregatesPageviewsByPostcodeAndWindow() throws Exception {
-        long flushTimestamp = WINDOW_START + 7 * 60;
+        long windowStart = 1611662640L;
+        long flushTimestamp = windowStart + 7 * 60;
 
         produceTestData("""
                 {"user_id":1,"postcode":"SW19","webpage":"www.example.com/a","timestamp":%d}
-                """, WINDOW_START);
+                """, windowStart);
 
         produceTestData("""
                 {"user_id":2,"postcode":"SW19","webpage":"www.example.com/b","timestamp":%d}
-                """, WINDOW_START + 15);
+                """, windowStart + 15);
 
         produceTestData("""
                 {"user_id":3,"postcode":"EC1","webpage":"www.example.com/c","timestamp":%d}
-                """, WINDOW_START);
+                """, windowStart);
 
         produceTestData("""
                 {"user_id":4,"postcode":"SW19","webpage":"www.example.com/d","timestamp":%d}
@@ -134,7 +145,7 @@ class PageviewPipelineE2ETest {
                         && list.stream().anyMatch(a -> "EC1".equals(a.postcode())));
 
         assertThat(aggregates).isNotEmpty();
-
+        // Deduplicate by (postcode, windowStart) - take the one with max count per key
         Map<String, PageviewAggregate> byPostcodeWindow = aggregates.stream()
                 .collect(Collectors.toMap(a -> a.postcode() + "|" + a.windowStart(), a -> a,
                         (a, b) -> a.pageviewCount() >= b.pageviewCount() ? a : b));
@@ -147,25 +158,78 @@ class PageviewPipelineE2ETest {
                 .min(Comparator.comparing(PageviewAggregate::windowStart));
 
         assertThat(sw19).isPresent();
-        assertThat(sw19.get().pageviewCount()).isGreaterThanOrEqualTo(2L);
+        assertThat(sw19.get().pageviewCount()).as("SW19 count").isGreaterThanOrEqualTo(2L);
         assertThat(ec1).isPresent();
-        assertThat(ec1.get().pageviewCount()).
-                isEqualTo(1L);
+        assertThat(ec1.get().pageviewCount()).as("EC1 count").isEqualTo(1L);
 
-        // Verify raw S3 path
+        // Verify raw S3 path uses event-time partitioning, not processing time
         List<String> rawKeys = await()
                 .pollDelay(Duration.ofSeconds(2))
                 .atMost(Duration.ofSeconds(30))
-                .until(this::listS3Keys, keys -> !keys.isEmpty());
-
+                .until(() -> listS3Keys("raw/"), keys -> !keys.isEmpty());
         assertThat(rawKeys)
+                .as("Raw S3 path must use event-time partition (yyyy/MM/dd/HH from pageview timestamp), not processing time")
                 .anyMatch(key -> key.contains("raw/" + EVENT_TIME_PARTITION + "/"));
+
+        // Verify aggregate files exist in S3
+        List<String> aggregateKeys = await()
+                .pollDelay(Duration.ofSeconds(2))
+                .atMost(Duration.ofSeconds(30))
+                .until(() -> listS3Keys("aggregates/"), keys -> keys.stream().anyMatch(k -> k.contains("aggregates-")));
+        assertThat(aggregateKeys)
+                .as("Aggregate files must exist under aggregates/yyyy/MM/dd/")
+                .anyMatch(key -> key.matches("aggregates/" + AGGREGATE_DATE_PARTITION + "/aggregates-\\d+\\.ndjson"));
+        assertThat(contentContainsPostcode(aggregateKeys, "aggregates-", "SW19"))
+                .as("Aggregate files must contain SW19 data").isTrue();
+        assertThat(contentContainsPostcode(aggregateKeys, "aggregates-", "EC1"))
+                .as("Aggregate files must contain EC1 data").isTrue();
     }
 
-    private List<String> listS3Keys() {
-        ListObjectsV2Request listObjectsV2Request = ListObjectsV2Request.builder().bucket(BUCKET).prefix("raw/").build();
-        ListObjectsV2Response response = s3Client.listObjectsV2(listObjectsV2Request);
+    @Test
+    @DisplayName("Late events are written to late aggregate files in S3")
+    void lateEventsWrittenToS3() throws Exception {
+        // Send Event A (12:11) first to close window, then Event B (12:04) - B is late, goes to late-pageviews
+        long closeTimestamp = 1611663060L;  // 2021-01-26 12:11:00
+        long lateTimestamp = 1611662684L;   // 2021-01-26 12:04:44
+
+
+        produceTestData("""
+                {"user_id":9999,"postcode":"SW19","webpage":"www.example.com/close","timestamp":%d}
+                """, closeTimestamp);
+        produceTestData("""
+                {"user_id":1234,"postcode":"SW19","webpage":"www.website.com/index.html","timestamp":%d}
+                """, lateTimestamp);
+
+        // Wait for late aggregates to be written to S3
+        List<String> lateKeys = await()
+                .pollDelay(Duration.ofSeconds(5))
+                .atMost(Duration.ofSeconds(45))
+                .until(() -> listS3Keys("aggregates/").stream()
+                                .filter(k -> k.contains("late-"))
+                                .toList(),
+                        keys -> !keys.isEmpty());
+        assertThat(lateKeys)
+                .as("Late aggregate files must exist under aggregates/yyyy/MM/dd/late-*.ndjson")
+                .anyMatch(key -> key.matches("aggregates/" + AGGREGATE_DATE_PARTITION + "/late-\\d+-\\d+\\.ndjson"));
+        assertThat(contentContainsPostcode(lateKeys, "late-", "SW19"))
+                .as("Late aggregate files must contain the dropped SW19 event").isTrue();
+    }
+
+    private List<String> listS3Keys(String prefix) {
+        ListObjectsV2Response response = s3Client.listObjectsV2(
+                ListObjectsV2Request.builder().bucket(BUCKET).prefix(prefix).build());
         return response.contents().stream().map(S3Object::key).toList();
+    }
+
+    private boolean contentContainsPostcode(List<String> keys, String keyFilter, String postcode) throws IOException {
+        for (String key : keys) {
+            if (!key.contains(keyFilter)) continue;
+            String body = new String(
+                    s3Client.getObject(GetObjectRequest.builder().bucket(BUCKET).key(key).build()).readAllBytes(),
+                    StandardCharsets.UTF_8);
+            if (body.contains("\"postcode\":\"" + postcode + "\"")) return true;
+        }
+        return false;
     }
 
     private void produceTestData(String x, long windowStart) throws Exception {
@@ -176,7 +240,7 @@ class PageviewPipelineE2ETest {
     }
 
     private void consumeAggregatesInto(List<PageviewAggregate> into) {
-        String groupId = "e2e-test-" + System.currentTimeMillis();
+        String groupId = "integration-test-" + System.currentTimeMillis();
         try (Consumer<String, PageviewAggregate> consumer = getKafkaConsumer(getJsonDeserializer(), groupId)) {
             consumer.subscribe(Collections.singletonList("pageview-aggregates"));
             ConsumerRecords<String, PageviewAggregate> records = consumer.poll(Duration.ofSeconds(2));

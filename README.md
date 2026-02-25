@@ -81,34 +81,13 @@ Or with `awslocal`: `awslocal s3 ls s3://pageview-data/`
 ```
 
 - **Unit tests**: Topology (TopologyTestDriver), controller, serialization
-- **Integration tests**: Full Spring context with EmbeddedKafka, API acceptance (POST single/batch)
-- **E2E tests** (excluded by default, requires docker/Docker):
+- **integration tests** (excluded by default, requires docker/Docker):
 
 ```bash
-./gradlew e2eTest
+./gradlew integration
 ```
 
-The E2E test verifies the full pipeline: POST pageviews → Kafka Streams aggregation → consume aggregates from output topic. It uses Testcontainers (LocalStack for S3).
-
-### Using docker instead of Docker
-
-Testcontainers works with docker. `testcontainers.properties` disables Ryuk (the container reaper) for docker compatibility. Ensure `DOCKER_HOST` points to your docker socket:
-
-**macOS** (docker Machine):
-
-```bash
-docker machine start
-export DOCKER_HOST=unix://$(docker machine inspect --format '{{.ConnectionInfo.dockerSocket.Path}}')
-./gradlew test
-```
-
-**Linux** (rootless docker):
-
-```bash
-systemctl --user enable --now docker.socket
-export DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/docker/docker.sock
-./gradlew test
-```
+The integration test verifies the full pipeline: POST pageviews → Kafka Streams aggregation → consume aggregates from output topic. It uses Testcontainers (LocalStack for S3).
 
 ## Project Structure
 

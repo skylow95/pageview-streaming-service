@@ -31,9 +31,8 @@ public class LateAggregateS3Writer {
 
     private static final Logger log = LoggerFactory.getLogger(LateAggregateS3Writer.class);
 
-    private static final String AGGREGATES_PREFIX = "aggregates/";
     private static final DateTimeFormatter WINDOW_FORMATTER = DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneOffset.UTC);
-
+    private static final String AGGREGATES_PREFIX = "aggregates/";
     private static final String METRIC_S3_WRITES = "s3.writes";
     private static final String METRIC_S3_ERRORS = "s3.errors";
     private static final String TAG_WRITER = "writer";
@@ -41,32 +40,32 @@ public class LateAggregateS3Writer {
     private final S3Client s3Client;
     private final String bucketName;
     private final ObjectMapper objectMapper;
-    private final int batchSize;
     private final long windowSizeSeconds;
+    private final int batchSize;
 
     private final ConcurrentLinkedQueue<PageviewAggregate> buffer = new ConcurrentLinkedQueue<>();
 
     public LateAggregateS3Writer(S3Client s3Client,
-                                 @Value("${aws.s3.bucket-name:pageview-data}") String bucketName,
-                                 @Value("${pipeline.late.batch-size:50}") int batchSize,
+                                @Value("${aws.s3.bucket-name:pageview-data}") String bucketName,
+                                @Value("${pipeline.late.batch-size:50}") int batchSize,
                                  @Value("${pipeline.stream.window-size-seconds:60}") long windowSizeSeconds,
-                                 @Value("${pipeline.late.flush-interval-seconds:60}") int flushIntervalSeconds,
-                                 @Qualifier("jsonObjectMapper") ObjectMapper objectMapper) {
+                                @Value("${pipeline.late.flush-interval-seconds:60}") int flushIntervalSeconds,
+                                @Qualifier("jsonObjectMapper") ObjectMapper objectMapper) {
         this.s3Client = s3Client;
         this.bucketName = bucketName;
-        this.batchSize = batchSize;
         this.windowSizeSeconds = windowSizeSeconds;
+        this.batchSize = batchSize;
         this.objectMapper = objectMapper;
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleAtFixedRate(this::flush, flushIntervalSeconds, flushIntervalSeconds, TimeUnit.SECONDS);
     }
 
-    @KafkaListener(topics = "${pipeline.aggregates-topic:late-pageview-aggregates}", groupId = "late-aggregates-s3-writer", containerFactory = "pageviewListenerFactory")
+    @KafkaListener(topics = "${pipeline.late-topic:late-pageview-aggregates}", groupId = "late-pageviews-s3-writer", containerFactory = "pageviewListenerFactory")
     public void consume(Pageview pageview) {
         long windowStartSec = (pageview.timestamp() / windowSizeSeconds) * windowSizeSeconds;
-        String windowStart = WINDOW_FORMATTER.format(Instant.ofEpochSecond(windowStartSec));
-
+        String windowStart = WINDOW_FORMATTER.format(Instant.ofEpochSecond(windowStartSec).atZone(ZoneOffset.UTC));
         buffer.add(new PageviewAggregate(pageview.postcode(), windowStart, 1L));
+
         if (buffer.size() >= batchSize) {
             flush();
         }
@@ -77,29 +76,24 @@ public class LateAggregateS3Writer {
         synchronized (buffer) {
             batch = BufferUtils.drain(buffer, batchSize * 2);
         }
-        if (batch.isEmpty()) {
-            return;
-        }
+        if (batch.isEmpty()) return;
 
         try {
             Map<String, List<PageviewAggregate>> byDate = batch.stream()
                     .collect(Collectors.groupingBy(agg -> AggregatePathUtils.pathFromWindowStart(agg.windowStart())));
             long timestamp = System.currentTimeMillis();
+            int index = 0;
             for (Map.Entry<String, List<PageviewAggregate>> data : byDate.entrySet()) {
-                String key = formatKey(data, timestamp);
+                String key = AGGREGATES_PREFIX + data.getKey() + "/late-" + timestamp + "-" + index++ + ".ndjson";
                 String ndjson = S3NdjsonUtils.toNdjson(data.getValue(), objectMapper);
                 S3NdjsonUtils.writeToS3(s3Client, bucketName, key, ndjson);
-                log.debug("Wrote {} aggregates to s3://{}/{}", data.getValue().size(), bucketName, key);
+                log.debug("Wrote {} late aggregates to s3://{}/{}", data.getValue().size(), bucketName, key);
             }
-            Metrics.counter(METRIC_S3_WRITES, TAG_WRITER, "aggregate").increment(batch.size());
-        } catch (Exception ex) {
-            Metrics.counter(METRIC_S3_ERRORS, TAG_WRITER, "aggregate").increment();
-            log.error("Failed to write aggregates to S3", ex);
+            Metrics.counter(METRIC_S3_WRITES, TAG_WRITER, "late").increment(batch.size());
+        } catch (Exception e) {
+            Metrics.counter(METRIC_S3_ERRORS, TAG_WRITER, "late").increment();
+            log.error("Failed to write late aggregates to S3", e);
             buffer.addAll(batch);
         }
-    }
-
-    private String formatKey(Map.Entry<String, List<PageviewAggregate>> data, long timestamp) {
-        return AGGREGATES_PREFIX + data.getKey() + "/late-" + timestamp + ".ndjson";
     }
 }

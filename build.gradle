@@ -49,15 +49,15 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform {
-        excludeTags 'e2e'
+        excludeTags 'integration'
     }
 }
 
-tasks.register('e2eTest', Test) {
-    description = 'Runs E2E tests (requires Docker for LocalStack)'
+tasks.register('integration', Test) {
+    description = 'Runs integration tests (requires Docker for LocalStack)'
     group = 'verification'
     useJUnitPlatform {
-        includeTags 'e2e'
+        includeTags 'integration'
     }
     shouldRunAfter test
 }

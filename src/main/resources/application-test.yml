@@ -3,3 +3,7 @@
 aws:
   s3:
     bucket-name: pageview-data
+
+pipeline:
+  late:
+    flush-interval-seconds: 10
