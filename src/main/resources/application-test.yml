@@ -1,0 +1,5 @@
+# Test profile - EmbeddedKafka provides bootstrap-servers
+# aws.s3.endpoint-override set via @DynamicPropertySource to skip LocalStack
+aws:
+  s3:
+    bucket-name: pageview-data

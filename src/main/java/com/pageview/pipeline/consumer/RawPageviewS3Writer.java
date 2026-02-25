@@ -16,10 +16,12 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 @Component
 public class RawPageviewS3Writer {
@@ -71,20 +73,29 @@ public class RawPageviewS3Writer {
             return;
         }
 
-        String s3Key = buildS3Key();
+        Map<String, List<Pageview>> byPartition = batch.stream()
+                .collect(Collectors.groupingBy(pv -> pathFormatter.format(Instant.ofEpochSecond(pv.timestamp()))));
+
         try {
-            String ndjson = S3NdjsonUtils.toNdjson(batch, objectMapper);
-            S3NdjsonUtils.writeToS3(s3Client, bucketName, s3Key, ndjson);
-            log.debug("Wrote {} raw pageviews to s3://{}/{}", batch.size(), bucketName, s3Key);
+            long suffix = System.currentTimeMillis();
+            int index = 0;
+            for (Map.Entry<String, List<Pageview>> entry : byPartition.entrySet()) {
+                String partition = entry.getKey();
+                List<Pageview> partitionBatch = entry.getValue();
+
+                String s3Key = formatS3Key(partition, suffix, index++);
+                String ndjson = S3NdjsonUtils.toNdjson(partitionBatch, objectMapper);
+
+                S3NdjsonUtils.writeToS3(s3Client, bucketName, s3Key, ndjson);
+                log.debug("Wrote {} raw pageviews to s3://{}/{}", batch.size(), bucketName, s3Key);
+            }
         } catch (Exception e) {
             log.error("Failed to write raw pageviews to S3", e);
             buffer.addAll(batch);
         }
     }
 
-    private String buildS3Key() {
-        Instant now = Instant.now();
-        String partition = pathFormatter.format(now);
-        return RAW_PREFIX + partition + "/pageviews-" + now.toEpochMilli() + ".ndjson";
+    private String formatS3Key(String partition, long suffix, int index) {
+        return RAW_PREFIX + partition + "/pageviews-" + suffix + "-" + index + ".ndjson";
     }
 }

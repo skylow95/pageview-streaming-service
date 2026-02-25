@@ -46,3 +46,19 @@ dependencies {
     testImplementation "org.awaitility:awaitility:${awaitilityVersion}"
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
+
+tasks.named('test') {
+    useJUnitPlatform {
+        excludeTags 'e2e'
+    }
+}
+
+tasks.register('e2eTest', Test) {
+    description = 'Runs E2E tests (requires Docker for LocalStack)'
+    group = 'verification'
+    useJUnitPlatform {
+        includeTags 'e2e'
+    }
+    shouldRunAfter test
+}
+
